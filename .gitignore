@@ -11,6 +11,9 @@
 # Test binary, built with `go test -c`
 *.test
 
+# 本地构建产物（scripts/build.sh 输出）
+bin/
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*

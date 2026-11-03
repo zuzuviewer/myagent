@@ -650,6 +650,8 @@ type AuditEvent struct {
 
 ## 5. 测试策略
 
+统一入口：`scripts/test-all.sh`（格式 → `go vet` → 构建 → `go test -count=1` → 覆盖率）、`scripts/build.sh`（产出 `bin/coding-agent`）与 `scripts/smoke.sh`（用二进制验证退出码，原因见 §3.1）。后续里程碑分层补充测试时接入同一入口，不另起命令约定。
+
 ### 5.1 单元测试
 
 - 配置加载：默认值 → 文件 → 环境变量 的优先级、严格解析（未知项 / 空文件 / 多文档）、Token 预算关系校验（窗口 > 输出预留）与数量级上限、币种枚举、输入归一化（空白、路径结尾 `/`），以及密钥不进入任何可打印输出。
@@ -723,6 +725,7 @@ type AuditEvent struct {
 │   ├── permission/
 │   └── audit/
 ├── configs/
+├── scripts/
 └── go.mod
 ```
 

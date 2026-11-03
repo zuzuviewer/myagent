@@ -90,6 +90,7 @@ flowchart TD
 │   ├── permission/
 │   └── audit/
 ├── configs/
+├── scripts/
 └── go.mod
 ```
 
@@ -126,6 +127,17 @@ go run ./cmd/coding-agent plan "设计配置加载模块"
 M3 的命令形式与 M2 相同（差异在 Loop 与上下文加固），不再单独列出示例。
 
 验证退出码（`0` / `1` / `2` / `130`）必须用编译后的二进制：`go run` 会把子进程的非零退出码统一掩盖为 1。
+
+## 开发与验证
+
+```bash
+scripts/test-all.sh          # 格式 + go vet + 构建 + 全量测试 + 覆盖率
+scripts/test-all.sh --html   # 额外生成 coverage.html
+scripts/build.sh             # 产出 bin/coding-agent 并自检
+scripts/smoke.sh             # 用二进制验证退出码（先跑 build.sh）
+```
+
+冒烟脚本全部使用 `--provider fake`，不产生真实请求与费用；真实模型的单轮冒烟需自行带 `OPENAI_API_KEY` 执行。
 
 ## 文档导航
 
