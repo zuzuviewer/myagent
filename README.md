@@ -1,8 +1,10 @@
 # Go AI Coding Agent
 
-> 文档基线：**V1.1**（技术细节增强修订稿）
+> 文档基线：**V1.2**（单 Agent 纵向闭环修订稿）
+>
+> 当前状态：设计阶段，代码尚未开始。
 
-一个使用 Go 从零实现的 AI Coding Agent 学习项目。目标是通过渐进式实现，理解模型交互、Agent Loop、工具调用、上下文管理、权限控制、计划与代码审查，以及后续的 Multi-Agent 协作。
+一个使用 Go 从零实现的 AI Coding Agent 学习项目。目标是通过渐进式实现，理解模型交互、Agent Loop、工具调用、上下文管理、权限控制、计划与代码审查。当前专注单 Agent，不展开 Multi-Agent 或 Orchestrator。
 
 ## 项目目标
 
@@ -11,7 +13,7 @@
 - 将模型、工具、上下文、权限和执行环境解耦。
 - Plan Mode 与 Review Mode 必须由程序级权限保证只读。
 - 先建立安全边界，再逐步开放文件修改和命令执行能力。
-- 后续演进为 Plan Agent、Coding Agent、Review Agent 与 Orchestrator。
+- 将 Plan / Review 实现为同一 Agent 的只读工作模式。
 
 ## 当前技术决策
 
@@ -23,7 +25,7 @@
 | 后续模型 API | OpenAI Responses API |
 | SDK / HTTP | 设计上隔离 Provider；具体实现方式在编码阶段选定 |
 | Claude Code / Anthropic API | 当前不接入 |
-| Agent 形态 | MVP 单 Agent；后续 Multi-Agent |
+| Agent 形态 | 单 Agent；Plan / Review 为工作模式 |
 
 ## 工作模式
 
@@ -50,11 +52,15 @@ flowchart TD
     AC --> CTX[Context Manager]
     AC --> MP[Model Provider]
     MP --> API[OpenAI Chat Completions]
-    AC --> TR[Tool Registry]
-    TR --> TE[Tool Executor]
+    AC -->|获取工具 Schema| TR[Tool Registry]
+    AC -->|提交 Tool Call| TE[Tool Executor]
+    TE -->|查询定义与 Handler| TR
     TE --> PE[Permission Layer]
     PE -->|Allow| RUN[Tool Implementation]
-    PE -->|Deny / Ask| BLOCK[Reject or Request Approval]
+    PE -->|Deny| BLOCK[Reject]
+    PE -->|Ask| AP[Approval UI]
+    AP -->|批准, 重新授权| PE
+    AP -->|拒绝或取消| BLOCK
     RUN --> RESULT[Tool Result]
     RESULT --> AC
     BLOCK --> AC
@@ -74,46 +80,56 @@ flowchart TD
 ├── cmd/coding-agent/
 │   └── main.go
 ├── internal/
+│   ├── cli/
+│   ├── config/
 │   ├── agent/
 │   ├── provider/
-│   ├── context/
+│   ├── ctxmgr/
 │   ├── tool/
+│   ├── executor/
 │   ├── permission/
-│   ├── execution/
-│   ├── plan/
-│   └── review/
+│   └── audit/
 ├── configs/
 └── go.mod
 ```
 
 ## 开发路线
 
-| 阶段 | 周次 | 交付 |
-|---|---:|---|
-| 项目骨架与 CLI | 1 | 可运行 CLI、配置和日志 |
-| 模型接入 | 2 | Chat Completions Provider |
-| 工具协议 | 3 | Tool Schema、Registry、调用解析 |
-| Agent Loop | 4 | 模型—工具循环 |
-| 只读文件工具与权限基础 | 5 | 工作区约束、读取、搜索 |
-| 受控写入与命令执行 | 6 | 授权、执行限制、测试工具 |
-| 上下文与安全完善 | 7 | Context Manager、审计、边界测试 |
-| MVP 整合 | 8 | 集成测试与可用 CLI |
-| Plan / Review Mode | 9 | 单 Agent 下的只读规划和审查 |
-| Multi-Agent | 10+ | 专用 Agent、任务交接 |
-| Orchestrator | 后续 | 拆解、调度、汇总 |
+| 阶段 | 学习重点 | 可运行交付 |
+|---|---|---|
+| M1：单轮模型调用 | CLI、配置、Provider、Mock、`--debug` | 完成一次真实请求，错误可诊断；逐轮可见完整上下文、Token 与耗时 |
+| M2：最小只读闭环 | Tool Schema、Registry、Executor、基础权限、基础 Agent Loop | Agent 使用读取或列表工具读取 `go.mod` 并总结项目 |
+| M3：Loop 与上下文加固 | 多 Tool Call、错误反馈、取消、预算、Context Manager | 畸形参数和工具失败可恢复，超长输出受控，Loop 能可靠终止 |
+| M4：Plan / Review | Mode、只读权限、结构化提交 | 同一 Agent 可规划和审查，写入与命令被硬性拒绝 |
+| M5：受控写入与审批 | 锚点编辑、Ask 审批、审计 | 在临时 Git 仓库完成一次小修改并展示 Diff |
+| M6：命令与 MVP 验收 | 受控测试命令、进程限制、任务级评测 | 端到端完成“修改—验证—总结”，安全和集成测试通过 |
+
+每个阶段都形成可运行、可观察的纵向闭环；详细职责和验收标准见技术设计文档。
+
+## 运行（M1 完成后可用）
+
+- Go 1.22 及以上。
+- `OPENAI_API_KEY` 从环境变量读取，不写入仓库与日志。
+
+```bash
+go run ./cmd/coding-agent --debug "读取 go.mod 并总结这个项目"
+go run ./cmd/coding-agent plan "设计配置加载模块"
+```
 
 ## 文档导航
 
-- [技术设计文档](docs/TECHNICAL_DESIGN.md)：模块职责、接口草案、数据结构、权限与执行策略、测试和阶段计划。
-- [架构文档](docs/ARCHITECTURE.md)：组件关系、调用时序、权限边界和演进架构。
+- [技术设计文档](docs/TECHNICAL_DESIGN.md)：模块职责、Agent Loop、Context Manager、接口草案、权限与执行策略、测试和阶段验收。
+- [架构文档](docs/ARCHITECTURE.md)：组件关系、调用时序、权限边界和安全约束。
 
 ## 核心工程原则
 
-1. 所有工具执行必须经过 Tool Executor。
-2. Tool Executor 在执行前调用 Permission Layer；不存在绕过入口。
-3. Mode、Workspace 等安全上下文由应用程序创建，模型不能自行提升权限。
-4. 能力标签描述工具“能做什么”，不是“已经允许做什么”。
-5. Plan / Review 默认只读；用户确认计划不等于授予写权限。
-6. 文件路径检查必须考虑规范化、符号链接和竞态风险。
-7. 命令执行初期使用 `os/exec` 的参数数组，不默认启用 Shell。
-8. 先完成 MVP 所需的最小安全机制，再迭代沙箱、审批和更强隔离。
+完整定义见技术设计文档「2.2 规范条目表」，此处只列最关键的约束：
+
+1. 所有工具执行必须经过 Tool Executor；Permission Layer 只做决策、不执行工具。（R-01、R-02）
+2. Mode、Workspace、PolicyID 由应用创建，模型不能提升权限；Plan / Review 只暴露只读与提交工具，并硬性拒绝写操作。（R-04、R-05）
+3. Deny、审批拒绝或取消时工具实现调用次数为零；Ask 批准后必须对原请求重新授权。（R-06、R-07）
+4. 能力标签只描述“能做什么”，不表示“已允许”；未知一律拒绝。（R-03、R-09）
+5. 路径检查考虑规范化、符号链接和竞态；写入必须先读后写并校验内容哈希。（R-10、R-11、R-12）
+6. 命令使用参数数组与白名单，不默认 Shell；策略约束不等于系统隔离。（R-13、R-14）
+7. 上下文、工具输出和预算必须有上限；Tool Call 与 Tool Result 必须配对。（R-15、R-16、R-17）
+8. 审计可解释、可脱敏；敏感文件默认不读取、不外发给模型。（R-18、R-19）
