@@ -93,11 +93,15 @@ coding-agent --debug "读取 go.mod"     # 逐轮打印请求、响应与 Token 
 Review 作用域二选一：位置参数（默认 `.`）表示审查该路径下的文件内容；`--base <ref>` 表示审查该 Git 引用到工作区的 Diff。两者互斥，同时给出时 CLI 直接报错退出，不进入 Agent Loop。
 
 CLI 约定：
-- 退出码：`0` 任务完成；`1` 任务失败或被拒绝；`2` 参数或配置错误；`130` 用户取消。具体细分在 M1 固化。
-- `--debug` 把每轮完整请求与响应、Token 估算与累计、工具耗时写入 stderr（脱敏后），与审计日志分离。
+- 退出码：`0` 任务完成；`1` 任务失败或被拒绝；`2` 参数或配置错误；`130` 用户取消。具体细分在 M1 固化。验证退出码必须使用编译后的二进制：`go run` 会把子进程的非零退出码统一掩盖为 1，拿 `go run` 测 130 永远测不出真相。
+- `--debug` 把每轮完整请求与响应、Token 估算与累计、上下文窗口占用占比、工具耗时、带币种的累计成本写入 stderr（脱敏后），与审计日志分离。
 - 交互式审批仅在 TTY 下启用；非 TTY 环境下 Ask 一律按拒绝处理。
 
 CLI 不直接访问文件系统工具或启动命令工具；它只负责启动应用流程，并通过 `Approver` 与 `AuditSink` 接口把交互和日志注入给 Executor。
+
+M1 配置边界（固化 §3.1 中“具体细分在 M1 固化”的约定）：配置文件（`configs/config.yml`）只承载模型与预算配置——模型名、请求超时、`MaxOutputTokens`、`max_context_tokens`（模型上下文窗口，见 §3.6）、`currency` 与单价（成本估算用）；API Key 只从环境变量读取，不进入配置文件。三个 Token 相关量必须分清：上下文窗口（模型物理属性，input 与 output 总量上限）、输出预留（`MaxOutputTokens`）和可用输入预算；**可用输入预算不单独配置，由前两者派生**（公式见 §3.6），否则两个独立配置的数值可以相互矛盾却不报错。配置加载必须校验 `max_context_tokens > MaxOutputTokens`，不满足即启动失败。权限策略不进配置文件（与 §3.10 一致：MVP 规则集以代码内规则表定义）。可选兼容中转端点通过环境变量（如 `OPENAI_BASE_URL`）覆盖默认 Base URL，供 Provider 使用。
+
+成本展示的两个约束：（1）单价**必须与 `currency`（`USD` / `CNY`，默认 `USD`）一起声明**，否则 OpenAI（美元计价）与 DeepSeek（人民币计价）的单价会被相加成一个不带任何意义且看起来精确的数字；`currency` 只接受已登记枚举，其他写法启动即失败。（2）单价**未配置时不得默认为 0**：0 单价会算出“成本 0.00 元”这种伪装精确的假数，必须显式标注“单价未配置，无法估算成本”。取什么单价：M1 无法感知提示缓存命中与时段价，应取**最贵一档**（宁可高估，不高估会让预算判断失真）。
 
 ### 3.2 Mode Controller
 
@@ -215,10 +219,10 @@ type ToolSchema struct {
 - ToolResult 写入历史时序列化为 `role=tool` 消息：`ToolCallID` 对应 `tool_call_id`；Chat Completions 没有独立错误字段，`IsError` 编码进 `Content` 前缀（如 `ERROR: ...`），并在系统指令中说明该约定。
 - `OriginalBytes` 记录截断前大小，截断后内容必须带明确标记，不能伪装成完整结果。
 - MVP 请求固定 `parallel_tool_calls=false`，与串行执行一致；不要依赖模型自觉。
-- `Usage` 优先取 API 返回；缺失时使用估算值，并在 debug 输出中标注来源。成本 = Usage × 配置单价，按轮累计，仅用于展示与预算，不作为授权依据。
+- `Usage` 优先取 API 返回；缺失时使用估算值，并在 debug 输出中标注来源。成本 = Usage × 配置单价，按轮累计，仅用于展示与预算，不作为授权依据。累加时必须携带 `currency` 币种；单价未配置时输出“未配置”而非 0（见 §3.1）。
 - 设置请求超时、最大响应体、错误分类和有限重试。
 - 只对可安全重试的错误进行重试；工具执行不能因为模型请求重试而重复执行。
-- API Key 从环境变量或本地密钥配置读取，不写入仓库、不进入日志。
+- API Key **只从环境变量读取**（与 §3.1 一致：MVP 不支持把密钥写进配置文件或任何本地密钥文件），不写入仓库、不进入日志。默认 Base URL 指向 OpenAI，可通过环境变量覆盖为兼容 Chat Completions 的中转或自托管端点；MVP 仍要求密钥非空，因此无鉴权的本地端点属后续增强（见 §8）。
 - 后续 Responses API 通过新增 Provider 或适配器接入，不重写 Agent Loop。
 
 ### 3.5 Agent Core 与 Agent Loop
@@ -269,10 +273,20 @@ Context Manager 负责单次任务的消息状态和每次模型请求的上下�
 - 构造包含工具 Schema 的请求视图，并为模型响应保留输出 Token 空间。
 - 根据 Provider / 模型配置估算 Token；无法准确计算时使用保守估计，不能假设字符数等于 Token 数。
 - 对文件内容、命令输出和单个 Tool Result 设置字节与 Token 上限，保留明确的截断标记和原始结果大小，不能把截断内容伪装成完整结果。
-- 统计输入消息、工具 Schema 和输出预留的共同预算；超限前返回 ContextLimitError 或按任务策略终止，而不是无限追加历史。
+- 统计输入消息、工具 Schema 和输出预留的共同预算，预算分母是配置的模型上下文窗口；超限前返回 ContextLimitError 或按任务策略终止，而不是无限追加历史。
 - 裁剪或未来压缩历史时，将 Tool Call 与其全部 Tool Result 作为不可分割的协议单元，禁止留下孤立消息。
 
 文件内容、命令输出和其他工具结果均属于不可信数据，不能改变系统指令、Mode、Workspace 或 Permission Policy。审计日志中的上下文摘要仍需脱敏，并遵守输出大小限制。
+
+预算分母的来源：共同预算以配置项 `max_context_tokens`（模型上下文窗口）为上限，按
+
+```text
+可用输入预算 = max_context_tokens - MaxOutputTokens - 工具 Schema 估算 - 安全余量（建议窗口的 5%）
+```
+
+派生。可用输入预算是**计算值，不是第三个配置旋钮**：两个独立配置的数值可以矛盾（预算大于窗口）而加载时无法发现，只在长对话中以 API 超限错误暴露；派生则从结构上排除这类矛盾。安全余量必需，因为 Token 估算永远不精确（见上条“保守估计”）且误差随历史长度累积。配置加载时校验 `max_context_tokens > MaxOutputTokens`，否则属于纯配置错误，启动即失败。
+
+生效阶段：M1 只承载该配置、完成上述校验并在 `--debug` 展示窗口占用占比；裁剪、保守估算与 ContextLimitError 在 M3 随 R-15、R-17 一起落地，M1 不得提前实现裁剪逻辑。
 
 后续可以在单 Agent 范围内增加摘要压缩和会话持久化，但必须先通过协议配对、预算和截断测试。
 
@@ -598,6 +612,8 @@ type EditFileArgs struct {
 - TimeoutError / CanceledError：超时或用户取消。
 - ContextLimitError：上下文或预算限制。
 
+分类错误**由产生它的包定义并导出**（ProviderError 在 `provider` 包，携带 Category 与 Retryable；PermissionError 在 `permission` 包，余类推），不单独建共享错误包。跨层传递必须用 `%w` 保留错误链：上层用 `errors.As` 取分类、用 `errors.Is(err, context.Canceled)` 判定取消（退出码 130 依赖它），不得比较错误字符串。Provider 的重试严格限制在自身内部且只针对可重试分类（单次超时与鉴权失败不重试）；工具执行永远不因模型请求重试而重复执行。
+
 审计事件建议包含：
 - 时间、SessionID、TaskID。
 - Agent Mode。
@@ -630,12 +646,13 @@ type AuditEvent struct {
 
 调试输出与审计分离：`--debug` 面向开发者，把每轮完整请求与响应、Token 估算和工具耗时写入 stderr（脱敏后）；`AuditSink` 面向合规，记录上述结构化事件。两者都不得记录密钥、完整敏感文件内容或未脱敏的命令输出。
 
-每轮记录 `Usage` 与累计成本估算；成本仅用于展示和预算，不作为权限依据。
+每轮记录 `Usage` 与累计成本估算（带 `currency` 币种，单价未配置时标注未配置）；成本仅用于展示和预算，不作为权限依据。
 
 ## 5. 测试策略
 
 ### 5.1 单元测试
 
+- 配置加载：默认值 → 文件 → 环境变量 的优先级、严格解析（未知项 / 空文件 / 多文档）、Token 预算关系校验（窗口 > 输出预留）与数量级上限、币种枚举、输入归一化（空白、路径结尾 `/`），以及密钥不进入任何可打印输出。
 - Provider 请求/响应转换与错误分类。
 - Tool 参数 Schema 校验，以及 Core 初步检查与 Executor 权威校验的职责边界。
 - Registry 重名、未知能力和非法定义。
@@ -717,7 +734,7 @@ type AuditEvent struct {
 
 | 阶段 | 学习与实现内容 | 阶段验收 |
 |---|---|---|
-| M1：单轮模型调用 | Go 骨架、CLI、配置、日志、Chat Completions Provider、Fake Provider、`--debug` | CLI 可完成一次真实单轮请求；Mock 覆盖成功、超时和错误分类；密钥不进入日志；`--debug` 可见完整上下文、`Usage` 与累计成本 |
+| M1：单轮模型调用 | Go 骨架、CLI、配置、日志、Chat Completions Provider、Fake Provider、`--debug` | CLI 可完成一次真实单轮请求；Mock 覆盖成功、超时和错误分类；密钥不进入日志；`--debug` 可见完整上下文、`Usage` 与累计成本。M1 无工具，只发送用户消息并返回文本；退出码与配置字段按 §3.1 在 M1 固化。M1 尚未引入 Agent Core 与 Mode Controller，由 CLI 直接调用 Provider（临时形态）；M2 起该调用改由 Agent Core 组织，M1 不得提前搭建 Loop。 |
 | M2：最小只读闭环 | Tool Schema、Registry、Executor、基础 Permission Layer、基础 Agent Loop、读取 / 列表工具、Workspace 基础约束 | Fake Provider 驱动 Agent 读取 `go.mod` 并总结项目；Tool Result 按 ID 回填；非法参数不会进入工具实现；Loop 有轮数上限 |
 | M3：Loop 与上下文加固 | 多 Tool Call 串行处理、错误反馈、取消、预算、进程内 Context Manager、输出截断 | 文本与 Tool Call 同时返回可正确处理；无孤立工具消息；超长输出受控；Token / 时间 / 调用预算和用户取消测试通过 |
 | M4：Plan / Review | Mode Controller、工具视图过滤、Capability 策略、只读硬拒绝、`submit_plan` / `submit_review` | 同一 Agent 可完成只读规划和审查；提交结果经 Schema 校验；伪造写入或命令请求被 Deny 且实现调用次数为零；确认 Plan 不会自动进入 Execute |
@@ -755,6 +772,7 @@ type AuditEvent struct {
 - 操作系统级沙箱、容器隔离。
 - 更完善的 TOCTOU 防护与平台专属安全文件 API。
 - 网络代理、域名白名单和系统级网络隔离。
+- 无鉴权的本地 / 自托管端点（当前要求 API Key 非空），以及零单价（免费模型）与“单价未配置”的区分。
 - 细粒度用户审批 UI、策略配置文件和策略热更新。
 - 资源配额、受控工具并行和进程树治理。
 

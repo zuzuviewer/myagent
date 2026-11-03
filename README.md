@@ -106,15 +106,26 @@ flowchart TD
 
 每个阶段都形成可运行、可观察的纵向闭环；详细职责和验收标准见技术设计文档。
 
-## 运行（M1 完成后可用）
+## 运行（按里程碑逐步可用）
 
-- Go 1.22 及以上。
+- Go 1.26 及以上（与 `go.mod` 的 `go` 指令一致，修改需两处同步）。
 - `OPENAI_API_KEY` 从环境变量读取，不写入仓库与日志。
+- 默认读取 `configs/config.yml`，可用 `--config` 指定；`--provider fake` 用本地假响应联调 CLI，不产生真实请求与费用。
 
 ```bash
+# M1 起可用：单轮模型调用。本阶段没有工具，模型只能根据提示词内容回答。
+go run ./cmd/coding-agent --debug "用一句话解释 Go module 的作用"
+
+# M2 起可用：Agent 使用只读工具读取文件后总结
 go run ./cmd/coding-agent --debug "读取 go.mod 并总结这个项目"
+
+# M4 起可用：Plan / Review 只读工作模式
 go run ./cmd/coding-agent plan "设计配置加载模块"
 ```
+
+M3 的命令形式与 M2 相同（差异在 Loop 与上下文加固），不再单独列出示例。
+
+验证退出码（`0` / `1` / `2` / `130`）必须用编译后的二进制：`go run` 会把子进程的非零退出码统一掩盖为 1。
 
 ## 文档导航
 
