@@ -2,7 +2,7 @@
 
 > 文档基线：**V1.2**（单 Agent 纵向闭环修订稿）
 >
-> 当前状态：设计阶段，代码尚未开始。
+> 当前状态：**M1（单轮模型调用）已实现并交付**；M2–M6 未开始，变更轨迹见 [CHANGELOG.md](CHANGELOG.md)。
 
 一个使用 Go 从零实现的 AI Coding Agent 学习项目。目标是通过渐进式实现，理解模型交互、Agent Loop、工具调用、上下文管理、权限控制、计划与代码审查。当前专注单 Agent，不展开 Multi-Agent 或 Orchestrator。
 
@@ -23,7 +23,7 @@
 | 交互入口 | CLI |
 | 首个模型 API | OpenAI Chat Completions |
 | 后续模型 API | OpenAI Responses API |
-| SDK / HTTP | 设计上隔离 Provider；具体实现方式在编码阶段选定 |
+| SDK / HTTP | 已选定：标准库 `net/http` + `encoding/json` 直接调用，不引入 SDK；Provider 接口隔离厂商类型 |
 | Claude Code / Anthropic API | 当前不接入 |
 | Agent 形态 | 单 Agent；Plan / Review 为工作模式 |
 
@@ -74,6 +74,7 @@ flowchart TD
 ```text
 .
 ├── README.md
+├── CHANGELOG.md
 ├── docs/
 │   ├── TECHNICAL_DESIGN.md
 │   └── ARCHITECTURE.md
@@ -143,6 +144,7 @@ scripts/smoke.sh             # 用二进制验证退出码（先跑 build.sh）
 
 - [技术设计文档](docs/TECHNICAL_DESIGN.md)：模块职责、Agent Loop、Context Manager、接口草案、权限与执行策略、测试和阶段验收。
 - [架构文档](docs/ARCHITECTURE.md)：组件关系、调用时序、权限边界和安全约束。
+- [变更日志](CHANGELOG.md)：以里程碑为单位的实现与口径变更记录。
 
 ## 核心工程原则
 

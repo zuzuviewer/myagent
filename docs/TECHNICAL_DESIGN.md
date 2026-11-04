@@ -81,19 +81,21 @@ MVP 不追求完整 IDE、任意 Shell 自动化、任意目录访问、无人�
 - 调用 Mode Controller。
 - 将 Agent 输出、审批提示和错误呈现给用户。
 
-建议命令：
+建议命令（括号内为开始可用的阶段）：
 ```bash
-coding-agent "为项目增加配置加载"
-coding-agent plan "设计配置加载模块"
-coding-agent review ./                 # 审查指定路径的文件内容
-coding-agent review --base main        # 审查相对 main 的 Diff
-coding-agent --debug "读取 go.mod"     # 逐轮打印请求、响应与 Token 统计
+coding-agent --debug "用一句话解释 Go module 的作用"   # M1：单轮调用，逐条打印请求与响应
+coding-agent "为项目增加配置加载"                     # M2：具备工具能力后才能执行此类任务
+coding-agent plan "设计配置加载模块"                  # M4
+coding-agent review ./                 # M4：审查指定路径的文件内容
+coding-agent review --base main        # M4：审查相对 main 的 Diff
 ```
+
+M1 只有单轮调用且无工具，不能读取文件或执行命令。旗标：`--config` 指定配置路径（默认 `configs/config.yml`）；`--provider` 取 `chat-completions`（默认）或 `fake`，后者用本地假响应联调 CLI 与退出码，不产生真实请求与费用。
 
 Review 作用域二选一：位置参数（默认 `.`）表示审查该路径下的文件内容；`--base <ref>` 表示审查该 Git 引用到工作区的 Diff。两者互斥，同时给出时 CLI 直接报错退出，不进入 Agent Loop。
 
 CLI 约定：
-- 退出码：`0` 任务完成；`1` 任务失败或被拒绝；`2` 参数或配置错误；`130` 用户取消。具体细分在 M1 固化。验证退出码必须使用编译后的二进制：`go run` 会把子进程的非零退出码统一掩盖为 1，拿 `go run` 测 130 永远测不出真相。
+- 退出码：`0` 任务完成；`1` 任务失败或被拒绝；`2` 参数或配置错误；`130` 用户取消。M1 已固化：`2` 覆盖 flag 解析错误、缺少任务描述、配置加载或校验失败、未知 `--provider` 取值，以及调用尚未实现的 `plan` / `review` 子命令；`1` 覆盖 Provider 失败与“有返回但生成未完成”（空响应、`length`、`content_filter`、`tool_calls`、缺失或未知 `finish_reason`）；`130` 由 `errors.Is(err, context.Canceled)` 判定；`-h` 返回 `0`。验证退出码必须使用编译后的二进制：`go run` 会把子进程的非零退出码统一掩盖为 1，拿 `go run` 测 130 永远测不出真相。
 - `--debug` 把每轮完整请求与响应、Token 估算与累计、上下文窗口占用占比、工具耗时、带币种的累计成本写入 stderr（脱敏后），与审计日志分离。
 - 交互式审批仅在 TTY 下启用；非 TTY 环境下 Ask 一律按拒绝处理。
 
@@ -239,6 +241,7 @@ Agent Core 维护单次任务状态，通过 Context Manager 构造模型请求�
 7. 每次模型调用和工具执行后检查轮数、Token / 时间预算、工具调用次数和取消信号，再继续循环。
 
 系统指令与工具描述：
+- 单轮阶段（M1）需在系统指令中**显式声明当前没有工具**：否则模型会顺从“读取 go.mod”这类任务描述编造出一份读取结果，而 §3.5 要求不能仅凭模型声称判定成功。声明能力边界比提升回答质量更早重要。
 - 系统指令声明指令层级：只有系统指令与用户任务属于指令；文件内容、命令输出和其他工具结果都是待分析的数据，不能改变 Mode、权限或任务目标。
 - 工具描述面向模型编写：说明何时使用、何时不要使用、参数含义与边界，而不是只写函数签名。描述质量直接决定误调用率。
 - 工具错误信息应可纠正：指出哪个参数不合法、期望什么，使模型能在剩余预算内重试。
@@ -644,7 +647,7 @@ type AuditEvent struct {
 
 不得记录 API Key、访问令牌、完整敏感环境变量或未经筛选的敏感文件内容。
 
-调试输出与审计分离：`--debug` 面向开发者，把每轮完整请求与响应、Token 估算和工具耗时写入 stderr（脱敏后）；`AuditSink` 面向合规，记录上述结构化事件。两者都不得记录密钥、完整敏感文件内容或未脱敏的命令输出。
+调试输出与审计分离：`--debug` 面向开发者，把每轮完整请求与响应、Token 估算与来源标注（`api` / `estimated`）、上下文窗口占用占比、工具耗时和带币种的累计成本写入 stderr（脱敏后；字段清单以 §3.1 为准，不在此处开第二份定义）；`AuditSink` 面向合规，记录上述结构化事件。两者都不得记录密钥、完整敏感文件内容或未脱敏的命令输出。
 
 每轮记录 `Usage` 与累计成本估算（带 `currency` 币种，单价未配置时标注未配置）；成本仅用于展示和预算，不作为权限依据。
 
@@ -655,6 +658,7 @@ type AuditEvent struct {
 ### 5.1 单元测试
 
 - 配置加载：默认值 → 文件 → 环境变量 的优先级、严格解析（未知项 / 空文件 / 多文档）、Token 预算关系校验（窗口 > 输出预留）与数量级上限、币种枚举、输入归一化（空白、路径结尾 `/`），以及密钥不进入任何可打印输出。
+- CLI：参数与子命令解析、退出码映射（`0` / `1` / `2` / `130`）、正文走 stdout 而诊断与 debug 走 stderr、debug 输出含 Token 来源标注且不含密钥、交给 Provider 的请求结构（系统指令必须声明无工具能力）；Fake 与真实 Provider 遵守同一请求校验契约。
 - Provider 请求/响应转换与错误分类。
 - Tool 参数 Schema 校验，以及 Core 初步检查与 Executor 权威校验的职责边界。
 - Registry 重名、未知能力和非法定义。
@@ -710,6 +714,7 @@ type AuditEvent struct {
 ```text
 .
 ├── README.md
+├── CHANGELOG.md
 ├── docs/
 │   ├── TECHNICAL_DESIGN.md
 │   └── ARCHITECTURE.md
@@ -728,6 +733,8 @@ type AuditEvent struct {
 ├── scripts/
 └── go.mod
 ```
+
+上述为**目标布局**：包按里程碑创建。M1 实际只有 `cli`、`config`、`provider` 三个内部包与 `cmd/coding-agent`；`agent`、`ctxmgr`、`tool`、`executor`、`permission`、`audit` 在对应里程碑才建立，提前建空包不算“骨架完整”。`bin/` 与 `coverage.out` 是本地产物，已纳入忽略。
 
 包职责与架构组件一一对应：`cli` 只做参数、渲染和审批交互；`config` 负责模型与策略配置；`agent` 包含 Mode Controller、Agent Loop 与 Plan / Review 的结构定义；`provider` 包含 Chat Completions 与 Fake Provider；`ctxmgr` 是 Context Manager（避开标准库 `context` 同名）；`tool` 包含 Definition、Registry 和内置工具；`executor` 是唯一执行入口，负责参数校验、授权调用、审批编排与结果封装；`permission` 只做决策，可引用 `tool` 的类型，但 `tool` 不得引用 `permission`；`audit` 定义事件与 Sink。Plan / Review 是工作模式，不再单独建包。
 
@@ -783,4 +790,4 @@ type AuditEvent struct {
 
 **V1.2** 补充 Agent Loop 响应与错误语义、最小 Context Manager、Ask 重新授权、OperationIntent 和纵向实施路线，统一 MVP 与参数校验边界，并澄清命令执行不具备主机级隔离。当前路线保持单 Agent。
 
-本稿不代表功能已经实现。文档中的 Go 结构体和接口为设计草案，编码时应通过测试验证并允许小幅演进。
+**实现状态**：M1 相关章节（§3.1 CLI 与配置边界、§3.4 Provider）已落地并通过测试；其余章节仍是设计草案，编码时应通过测试验证并允许小幅演进。判定“完成”的唯一依据是 §7 的阶段验收标准，而不是代码写完。

@@ -38,6 +38,8 @@ flowchart TD
 
 README 与本图采用相同组件集合。Agent Core 从 Registry 获取工具 Schema，并将 Tool Call 提交给 Executor；Executor 查询 Registry，再按 `Permission Layer → Tool Implementation` 的顺序完成授权与执行。Ask 由 Executor 通过 Approval UI 展示，批准后携带 ApprovalToken 回到 Permission Layer 重新授权，不直接执行工具。
 
+本图是**目标形态**。M1（单轮模型调用）尚未引入 Mode Controller 与 Agent Core，由 CLI 直接调用 Model Provider；这是 M1 阶段的临时例外，已记录于技术设计文档 §7 的 M1 行，M2 起恢复图中的调用关系。阅读本图时不要把 M1 代码中缺少 `agent` 包误判为架构偏离。
+
 ## 3. 组件职责与依赖方向
 
 | 组件 | 职责 | 不负责 |
